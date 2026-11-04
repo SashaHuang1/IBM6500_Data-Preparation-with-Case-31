@@ -1,0 +1,291 @@
+---
+title: "IC10-2-1 | Case 31 Data Preparation"
+subtitle: "Employees Federal Credit Union — reproducible data preparation report"
+author: "Yushan Huang"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## 1. Purpose and source documentation
+
+This report prepares the supplied Case 31 SPSS survey for subsequent marketing research. The case describes a mail survey of members of Employees Federal Credit Union (EFCU), focused on member perceptions, borrowing behavior, service awareness, employee proficiency, and operational effectiveness. The case narrative describes a sample of 300 members; the *number of records in the supplied SPSS file* is verified below rather than assumed to equal the original mailing sample. The questionnaire (Case Exhibit 31.1, pp. 707–709) and its coding key (Exhibit 31.2, p. 709) are the primary sources for interpreting responses.
+
+**Important coding distinction:** Questions 13–26 measure *awareness and use* of services (1 = aware and used; 2 = aware but not used; 3 = unaware). These are not agreement or satisfaction scales, so their original values must not be reverse-coded as if they were Likert attitudes.
+
+```{r setup}
+
+required <- c("haven", "dplyr", "tidyr", "purrr", "tibble", "knitr", "ggplot2")
+missing_packages <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_packages)) stop("Install required packages: ", paste(missing_packages, collapse = ", "))
+library(haven); library(dplyr); library(tidyr); library(purrr); library(tibble)
+library(knitr); library(ggplot2)
+raw_path <- "Case 31 Data_efcu_1.sav"
+stopifnot(file.exists(raw_path))
+data_raw <- read_sav(raw_path, user_na = FALSE)
+data_work <- data_raw
+fmt <- function(x) ifelse(is.na(x), "NA", format(round(x, 3), trim = TRUE))
+```
+
+## 2. Import, inspect, and preserve raw data
+
+```{r import-audit}
+cat("Imported rows:", nrow(data_raw), "
+Imported columns:", ncol(data_raw), "
+")
+cat("Variable names:
+", paste(names(data_raw), collapse = ", "), "
+")
+stopifnot(nrow(data_raw) > 0, ncol(data_raw) > 0)
+variable_inventory <- tibble(variable = names(data_raw),
+  original_label = map_chr(data_raw, ~ {x <- attr(.x, "label"); if (is.null(x)) "" else as.character(x)}),
+  storage_type = map_chr(data_raw, ~ class(.x)[1]),
+  missing_n = map_int(data_raw, ~ sum(is.na(.x))),
+  distinct_n = map_int(data_raw, ~ dplyr::n_distinct(.x, na.rm = TRUE)))
+kable(variable_inventory, caption = "Imported variable inventory")
+```
+
+**Interpretation.** The number of observations and variables is printed above from the actual supplied file. The inventory distinguishes original SPSS labels, storage types, missing observations, and observed unique values. This report preserves `data_raw` unchanged and makes all transformations in `data_work`.
+
+## 3. Measurement scales and questionnaire codebook
+
+The nominal scale identifies categories (e.g., yes/no); the ordinal scale orders responses (e.g., awareness levels or five-point agreement). A composite average of multiple consistently oriented Likert items may be treated as approximately interval for descriptive analysis, but the individual items remain ordinal. The survey does not provide a direct ratio-scale age or income measure in the supplied questionnaire items used here.
+
+```{r codebook}
+question_text <- c(
+ Q3="Employees are courteous",Q4="Employees are helpful",Q5="Employees are professional",Q6="Employees are always available",
+ Q7="Interest rates paid on share (savings) accounts",Q8="Interest charged on borrowed funds",Q9="Frequency of financial statements",Q10="Accuracy of statements",Q11="Statements easy to understand",Q12="Account information kept confidential",
+ Q13="Regular share accounts",Q14="Special subaccounts",Q15="Christmas club accounts",Q16="Individual retirement accounts",Q17="MasterCard credit cards",Q18="Signature loans",Q19="New car loans",Q20="Late model car loans",Q21="Older model car loans",Q22="Household goods/appliance loans",Q23="Recreational loans",Q24="Share collateralized loans",Q25="IRA loans",Q26="Line of credit loans",
+ Q27="Currently have a loan with the Credit Union",Q28="Borrowed from another source in the past year",Q29="Reason for borrowing elsewhere",Q30="Credit Union loan rates are lower",Q31="Personnel keep personal financial information confidential",Q32="Prompt in processing loan applications",Q33="Current services meet member needs",Q34="Loan applications are simple and easy",Q35="Most liked service",Q36="Least liked service",Q37="Overall management/operation rating",Q38="Live in headquarters area",Q39="Meets needs as well as members outside headquarters area",Q40="Suggested changes or additional services")
+scale_of <- function(nm) {
+ if (nm %in% paste0("Q",c(3:6,30:34))) "Ordinal: 5-point agreement"
+ else if (nm %in% paste0("Q",13:26)) "Ordinal: awareness/use categories"
+ else if (nm %in% c("Q7","Q8","Q9","Q10","Q37")) "Ordinal: ordered response categories"
+ else if (nm %in% c("Q11","Q12","Q27","Q28","Q38","Q39")) "Nominal: yes/no"
+ else if (nm %in% c("Q29","Q35","Q36","Q40")) "Nominal/text or multiple-response"
+ else "Verify against source data"
+}
+codebook <- tibble(variable = names(data_raw)) |>
+ mutate(question = ifelse(variable %in% names(question_text), unname(question_text[variable]), NA_character_),
+ measurement = vapply(variable, scale_of, character(1))) |>
+ left_join(variable_inventory, by = "variable")
+kable(codebook, caption = "Questionnaire-linked data dictionary")
+```
+
+**Note.** The original SPSS file may contain only a subset of the 40 survey questions. Questionnaire descriptions above are joined only to columns that actually exist. For items without a one-to-one coded response (e.g., open-ended questions or multiple-response selections), no unsupported numeric labels are invented.
+
+## 4. Audit response values and missingness
+
+
+```{r response-audit}
+response_audit <- purrr::map_dfr(names(data_raw), function(nm) {
+  x <- data_raw[[nm]]
+
+  tibble::tibble(
+    variable = nm,
+    value = as.character(x)
+  ) |>
+    dplyr::count(variable, value, name = "n")
+})
+
+knitr::kable(
+  response_audit,
+  caption = "All observed response values, before recoding"
+)
+```
+
+
+For the survey coding key, the special category **No opinion = 6** is documented for the high/low interest-rate items, and **No answer = 6** is documented for some evaluation items; **No answer = 3** is documented for yes/no questions. A code is recoded only when the question's own response format supports that interpretation. A legitimate midpoint (3 = uncertain) on the five-point agreement questions is **not** missing.
+
+## 5. Label variables and apply justified missing-value rules
+
+```{r recode}
+# Attach questionnaire wording to the analysis copy without changing the raw import.
+for (nm in intersect(names(data_work), names(question_text)))
+ attr(data_work[[nm]], "label") <- unname(question_text[nm])
+
+# Preserve original item columns; create clearly named analysis versions.
+for (nm in intersect(names(data_work), paste0("Q", c(3:12,13:28,30:34,37:39)))) {
+ x <- as.numeric(data_work[[nm]])
+ clean <- x
+ if (nm %in% paste0("Q",c(3:6,30:34))) clean[!is.na(clean) & !(clean %in% 1:5)] <- NA_real_
+ if (nm %in% paste0("Q",13:26)) clean[!is.na(clean) & !(clean %in% 1:3)] <- NA_real_
+ if (nm %in% c("Q7","Q8")) clean[!is.na(clean) & !(clean %in% 1:5)] <- NA_real_  # 6 = no opinion
+ if (nm == "Q9") clean[!is.na(clean) & !(clean %in% 1:5)] <- NA_real_
+ if (nm == "Q10") clean[!is.na(clean) & !(clean %in% 1:5)] <- NA_real_
+ if (nm == "Q37") clean[!is.na(clean) & !(clean %in% 1:5)] <- NA_real_ # 6 = no opinion per coding key
+ if (nm %in% c("Q11","Q12","Q27","Q28","Q38","Q39")) clean[!is.na(clean) & !(clean %in% 1:2)] <- NA_real_
+ data_work[[paste0(nm,"_clean")]] <- clean
+}
+
+recode_check <- map_dfr(intersect(names(data_raw), paste0("Q",c(3:28,30:34,37:39))), function(nm) {
+ tibble(variable = nm,
+  original_missing = sum(is.na(data_raw[[nm]])),
+  analysis_missing = sum(is.na(data_work[[paste0(nm,"_clean")]])),
+  additional_missing = analysis_missing - original_missing)
+})
+kable(recode_check, caption = "Audit trail: original vs. analysis missingness")
+```
+
+**Decision.** Retain the original coded columns for reproducibility; create `_clean` variables for analysis. Exclude special missing/no-opinion responses from means and correlations, while retaining substantive `3 = uncertain` agreement responses. Do not interpret code 3 as missing for the service-awareness items, where it means *unaware*.
+
+## 6. Reverse coding and service awareness indicators
+
+The employee and operational statements are all positively worded in the questionnaire. Therefore, their native 1–5 direction already aligns with higher = more favorable; reversing them without a research reason would be incorrect. To demonstrate reverse coding transparently, we create a positively oriented version of each agreement item, with `6 - original` **only if** the imported SPSS labels use the opposite numerical direction (1 = strongly agree, 5 = strongly disagree). The questionnaire's published code key specifies 1 = strongly disagree and 5 = strongly agree, so **no reversal is needed** for these items.
+
+```{r reverse-coding}
+likert_items <- intersect(paste0("Q",c(3:6,30:34)), names(data_raw))
+for (nm in likert_items) {
+ data_work[[paste0(nm,"_favorable")]] <- data_work[[paste0(nm,"_clean")]]
+}
+# An explicit, non-destructive reverse-coding example, NOT used in the index:
+if ("Q3_clean" %in% names(data_work)) {
+ data_work$Q3_reverse_demo <- ifelse(is.na(data_work$Q3_clean), NA_real_, 6 - data_work$Q3_clean)
+}
+awareness_items <- intersect(paste0("Q",13:26), names(data_raw))
+for (nm in awareness_items) {
+ x <- data_work[[paste0(nm,"_clean")]]
+ data_work[[paste0(nm,"_aware")]] <- ifelse(is.na(x), NA_real_, as.numeric(x %in% c(1,2)))
+ data_work[[paste0(nm,"_used")]] <- ifelse(is.na(x), NA_real_, as.numeric(x == 1))
+}
+if (length(awareness_items)) {
+ aware_cols <- paste0(awareness_items,"_aware")
+ used_cols <- paste0(awareness_items,"_used")
+ data_work$services_aware_n <- rowSums(as.data.frame(data_work[aware_cols]), na.rm = TRUE)
+ data_work$services_used_n <- rowSums(as.data.frame(data_work[used_cols]), na.rm = TRUE)
+ data_work$services_aware_n[rowSums(!is.na(as.data.frame(data_work[aware_cols]))) == 0] <- NA
+ data_work$services_used_n[rowSums(!is.na(as.data.frame(data_work[used_cols]))) == 0] <- NA
+}
+```
+
+**Interpretation.** Service awareness (`1` for codes 1 or 2) is analytically distinct from actual service use (`1` only for code 1). A respondent can be aware of a service without having used it. The service counts are descriptive and must be interpreted alongside the number of nonmissing items.
+
+## 7. Employee proficiency: reliability and one-factor assessment
+
+Employee proficiency is operationalized using Q3–Q6 (courteous, helpful, professional, available). Cronbach's alpha and one-factor diagnostics are computed on complete responses, not assumed in advance.
+
+```{r employee-scale}
+cronbach_alpha <- function(df) {
+ df <- as.data.frame(df)
+ if (ncol(df) < 2 || nrow(df) < 3 || any(vapply(df, sd, numeric(1), na.rm=TRUE) == 0)) return(NA_real_)
+ k <- ncol(df)
+ (k/(k-1)) * (1 - sum(vapply(df, var, numeric(1))) / var(rowSums(df)))
+}
+assess_scale <- function(item_names, label) {
+ cols <- paste0(intersect(item_names, names(data_raw)), "_favorable")
+ if (length(cols) < 2) return(list(alpha = NA_real_, n = 0L, factor = NA_real_, cols = cols))
+ dat <- as.data.frame(data_work[cols]); complete <- stats::na.omit(dat)
+ a <- cronbach_alpha(complete)
+ eigen1 <- if (nrow(complete) > ncol(complete) && all(vapply(complete, sd, numeric(1)) > 0))
+   eigen(cor(complete), symmetric=TRUE)$values[1] else NA_real_
+ cat(label, "
+Items:", paste(cols, collapse=", "), "
+Complete cases:", nrow(complete),
+     "
+Cronbach alpha:", fmt(a), "
+First correlation-matrix eigenvalue:", fmt(eigen1), "
+")
+ if (nrow(complete) > ncol(complete) && all(vapply(complete, sd, numeric(1)) > 0)) {
+   fit <- tryCatch(factanal(complete, factors=1, rotation="none"), error=function(e) NULL)
+   if (!is.null(fit)) print(fit$loadings)
+ }
+ list(alpha=a, n=nrow(complete), factor=eigen1, cols=cols)
+}
+emp <- assess_scale(paste0("Q",3:6), "Employee proficiency")
+```
+
+**Interpretation and decision rule.** Alpha around 0.70 or higher is often used as a practical screening threshold, not a universal guarantee of validity. We also inspect one-factor loadings for consistency and conceptual coherence. If alpha is low, factor loadings are inconsistent, or too few cases remain, individual items should be reported rather than automatically averaged.
+
+## 8. Operational effectiveness: reliability and one-factor assessment
+
+Q30–Q34 concern loan rates, confidentiality, promptness, meeting members' needs, and ease of loan applications. They may represent multiple dimensions; a single composite is justified only when empirical and substantive evidence support it.
+
+```{r operational-scale}
+ops <- assess_scale(paste0("Q",30:34), "Operational effectiveness")
+```
+
+```{r composite-scores}
+# Conservative and reproducible: require all available questionnaire items
+# and adequate reliability before producing a single score.
+make_index <- function(cols, alpha, output) {
+ if (length(cols) >= 2 && !is.na(alpha) && alpha >= .70) {
+   m <- as.data.frame(data_work[cols]); complete <- complete.cases(m)
+   z <- rep(NA_real_, nrow(data_work)); z[complete] <- rowMeans(m[complete,,drop=FALSE])
+   data_work[[output]] <<- z
+   cat(output, ": created (alpha =", fmt(alpha), "; valid n =", sum(complete), ")
+")
+ } else {
+   cat(output, ": NOT created; evidence for a reliable composite is insufficient.
+")
+ }
+}
+make_index(emp$cols, emp$alpha, "employee_proficiency_index")
+make_index(ops$cols, ops$alpha, "operational_effectiveness_index")
+```
+
+**Answer.** Whether either index was actually created, the complete-case sample size, alpha, and factor loadings are reported above from the real SPSS dataset. A statistically adequate alpha alone does not prove that a one-factor model fits; the loading pattern must also be examined. The operational items especially warrant caution because they address conceptually different services.
+
+## 9. Quality checks and final data dictionary
+
+```{r quality-checks}
+stopifnot(nrow(data_work) == nrow(data_raw))
+stopifnot(all(names(data_raw) %in% names(data_work)))
+for (nm in intersect(paste0("Q",13:26), names(data_raw))) {
+ stopifnot(all(is.na(data_work[[paste0(nm,"_clean")]]) |
+                 data_work[[paste0(nm,"_clean")]] %in% 1:3))
+}
+new_cols <- setdiff(names(data_work), names(data_raw))
+final_dictionary <- tibble(variable = names(data_work),
+ label = map_chr(data_work, ~ {x<-attr(.x,"label"); if(is.null(x)) "" else as.character(x)}),
+ role = ifelse(names(data_work) %in% names(data_raw), "Original survey variable", "Derived analysis variable"),
+ missing_n = map_int(data_work, ~ sum(is.na(.x))))
+kable(final_dictionary, caption="Final variable dictionary and missingness")
+cat("Original variables:", ncol(data_raw), "
+Derived variables:", length(new_cols),
+    "
+Final variables:", ncol(data_work), "
+Rows retained:", nrow(data_work), "
+")
+```
+
+## 10. Export prepared SPSS dataset
+
+```{r export}
+# Convert labelled imported vectors to ordinary numeric values in export copy
+# to avoid conflicts between changed numeric values and original SPSS value labels.
+export_data <- data_work
+for (nm in names(export_data)) {
+ if (inherits(export_data[[nm]], "haven_labelled")) {
+   old_label <- attr(export_data[[nm]], "label")
+   export_data[[nm]] <- as.numeric(export_data[[nm]])
+   if (!is.null(old_label)) attr(export_data[[nm]], "label") <- old_label
+ }
+}
+write_sav(export_data, "Case31_cleaned.sav")
+write.csv(final_dictionary, "Case31_data_dictionary.csv", row.names = FALSE)
+cat("Saved Case31_cleaned.sav and Case31_data_dictionary.csv
+")
+```
+
+## 11. Conclusions and limitations
+
+This workflow retains the original imported data, documents the measurement scales, preserves substantive questionnaire categories, makes targeted missing-value recodes, demonstrates reverse coding without incorrectly reversing positively worded survey items, constructs service awareness and use indicators, and tests the internal consistency of candidate employee and operational scales. Index creation is conditional on empirical evidence rather than assumed. The prepared dataset is intended for later analysis, not causal inference. Because the questionnaire includes open-ended and multiple-response questions, not every survey question is necessarily represented as a single SPSS variable.
+
+## Appendix: Sources, reproducibility, and GitHub links
+
+- Case 31, *Employees Federal Credit Union*, Case Exhibits 31.1 and 31.2, pp. 705–709 (supplied questionnaire and narrative).
+- Course slide deck: *Scales of Measurement* (nominal, ordinal, interval, ratio).
+- [Professor's Case 31 data preparation instructions](https://jaejungca.github.io/case31/IC-M08-Data-Preparation-Case-31-R.html).
+- **GitHub repository:** REPLACE_WITH_YOUR_GITHUB_REPOSITORY_URL
+- **GitHub Pages:** REPLACE_WITH_YOUR_GITHUB_PAGES_URL
+
+
